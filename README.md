@@ -134,6 +134,27 @@ Scrub metadata from uploaded file if risk level is Medium or High.
 ### GET `/download/{filename}`
 Download scrubbed file.
 
+### POST `/verify`
+Analyze an uploaded file and report whether it contains **high-risk** metadata without scrubbing or modifying the file.
+
+**Request:**
+- `file`: Multipart file upload (image, PDF, or DOCX)
+
+**Response:**
+```json
+{
+  "filename": "example.jpg",
+  "secure_filename": "random_token.jpg",
+  "original_file_hash": "sha256_hash",
+  "high_risk_metadata": true,
+  "risk_assessment": {
+    "risk_score": 80,
+    "risk_level": "High",
+    "score_breakdown": {...}
+  }
+}
+```
+
 ## Example curl Commands
 
 ### Analyze an image file:
@@ -187,6 +208,15 @@ curl -X GET "http://localhost:8000/download/random_token_scrubbed.jpg" \
 curl -X GET "http://localhost:8000/health"
 ```
 
+### Verify high-risk metadata without scrubbing:
+
+```bash
+curl -X POST "http://localhost:8000/verify" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@/path/to/your/image.jpg"
+```
+
 ## Security Features
 
 - **File Extension Whitelist**: Only allowed extensions are accepted
@@ -197,6 +227,29 @@ curl -X GET "http://localhost:8000/health"
 - **Automatic Cleanup**: Files are automatically deleted after processing
 - **Path Traversal Protection**: Download endpoint validates filenames
 
+## Threat Model
+
+MetaGuard focuses on preventing **metadata-based privacy leakage**:
+
+- **GPS exposure**: Embedded GPS coordinates in images can reveal sensitive locations such as homes, workplaces, or secure facilities.
+- **Author email exposure**: Document authorship metadata can leak personal or corporate email addresses, facilitating phishing or targeted attacks.
+- **Username leakage**: Usernames and account identifiers in document metadata can expose internal user IDs or directory structures.
+- **Software version fingerprinting**: Producer/creator fields and version strings can reveal exact software versions, which attackers may use to target known vulnerabilities.
+
+The application assumes:
+- Files may be malicious or malformed.
+- Clients are untrusted and may attempt to bypass validation or download unauthorized files.
+
+## Security Hardening
+
+MetaGuard includes multiple hardening layers:
+
+- **Rate limiting**: Per-IP rate limiting (20 requests/minute) for `/analyze`, `/scrub`, and `/download/{filename}` to reduce abuse and brute-force attempts.
+- **Download expiration**: Scrubbed files are registered and available for secure download only for **5 minutes**, after which they are deleted and return HTTP 404.
+- **Structured logging**: Security events (`file_analyzed`, `file_scrubbed`, `file_downloaded`, `rate_limit_triggered`) are logged as JSON with masked IPs and without raw metadata, GPS coordinates, or file paths.
+- **Input validation**: File extension whitelist, MIME-type verification, and strict filename checks to block path traversal and unsupported file types.
+- **File size restrictions**: Maximum file size of **10MB** to mitigate resource exhaustion and denial-of-service scenarios.
+
 ## Project Structure
 
 ```
@@ -206,8 +259,10 @@ metaguard/
 ├── scrubber.py          # Metadata scrubbing module
 ├── risk_engine.py       # Risk scoring engine
 ├── file_validation.py   # File validation and security
+├── rate_limiter.py      # In-memory per-IP rate limiting
+├── security_logging.py  # Structured security logging utilities
 ├── requirements.txt     # Python dependencies
-└── README.md           # This file
+└── README.md            # This file
 ```
 
 ## Architecture

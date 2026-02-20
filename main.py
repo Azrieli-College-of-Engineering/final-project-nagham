@@ -2,25 +2,21 @@
 MetaGuard - FastAPI application for metadata analysis and scrubbing.
 """
 
-import os
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Any
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
+from typing import Any, Dict
 
-from file_validation import save_uploaded_file, cleanup_file
-from analyzer import extract_metadata, compute_sha256
+from fastapi import FastAPI, File, HTTPException, UploadFile, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+
+from analyzer import compute_sha256, extract_metadata
+from file_validation import cleanup_file, save_uploaded_file
+from rate_limiter import RateLimitError, check_rate_limit
 from risk_engine import assess_risk
 from scrubber import scrub_metadata
-
-
-app = FastAPI(
-    title="MetaGuard",
-    description="Metadata analysis and scrubbing service for images, PDFs, and DOCX files",
-    version="1.0.0"
-)
+from security_logging import log_security_event
 
 # CORS middleware
 app.add_middleware(
@@ -32,8 +28,66 @@ app.add_middleware(
 )
 
 
+SCRUBBED_FILES: Dict[str, datetime] = {}
+SCRUBBED_FILE_TTL_SECONDS = 300  # 5 minutes
+
+
+def _get_client_ip(request: Request) -> str:
+    """
+    Extract the client IP address from the request.
+
+    For simplicity and to avoid trust issues, this uses the direct client
+    connection rather than X-Forwarded-For headers.
+    """
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def _register_scrubbed_file(file_path: str) -> str:
+    """
+    Register a scrubbed file for secure download and track its expiration.
+
+    Args:
+        file_path: Full path to the scrubbed file.
+
+    Returns:
+        The scrubbed file's basename (secure filename).
+    """
+    filename = Path(file_path).name
+    SCRUBBED_FILES[filename] = datetime.now(timezone.utc)
+    return filename
+
+
+def _is_expired(created_at: datetime) -> bool:
+    """Return True if a scrubbed file created_at is past its TTL."""
+    return created_at + timedelta(seconds=SCRUBBED_FILE_TTL_SECONDS) < datetime.now(
+        timezone.utc
+    )
+
+
+def _cleanup_expired_files() -> None:
+    """
+    Delete expired scrubbed files from disk and registry.
+
+    This enforces the 5-minute lifetime for downloadable scrubbed files.
+    """
+    temp_dir = Path(tempfile.gettempdir()) / "metaguard"
+    now = datetime.now(timezone.utc)
+
+    expired_keys = []
+    for filename, created_at in list(SCRUBBED_FILES.items()):
+        if created_at + timedelta(seconds=SCRUBBED_FILE_TTL_SECONDS) < now:
+            file_path = temp_dir / filename
+            cleanup_file(str(file_path))
+            expired_keys.append(filename)
+
+    for key in expired_keys:
+        SCRUBBED_FILES.pop(key, None)
+
+
 @app.get("/")
-async def root():
+async def root() -> Dict[str, Any]:
     """Root endpoint with API information."""
     return {
         "name": "MetaGuard",
@@ -42,53 +96,77 @@ async def root():
         "endpoints": {
             "/analyze": "POST - Analyze metadata and calculate risk score",
             "/scrub": "POST - Scrub metadata from files with Medium/High risk",
-            "/health": "GET - Health check endpoint"
-        }
+            "/verify": "POST - Verify if a file contains high-risk metadata",
+            "/health": "GET - Health check endpoint",
+        },
     }
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, str]:
     """Health check endpoint."""
     return {"status": "healthy"}
 
 
 @app.post("/analyze")
-async def analyze_file(file: UploadFile = File(...)) -> Dict[str, Any]:
+async def analyze_file(
+    request: Request,
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
     """
     Analyze uploaded file and extract metadata with risk assessment.
-    
-    Args:
-        file: Uploaded file (image, PDF, or DOCX)
-        
-    Returns:
-        JSON response with metadata, risk score, and risk level
+
+    Applies per-IP rate limiting and security logging.
     """
-    file_path = None
+    ip = _get_client_ip(request)
+    try:
+        check_rate_limit(ip)
+    except RateLimitError:
+        log_security_event(
+            "rate_limit_triggered",
+            ip=ip,
+            extra={"endpoint": "/analyze"},
+        )
+        raise HTTPException(status_code=429, detail="Too Many Requests")
+
+    file_path: str | None = None
     try:
         # Save and validate uploaded file
         file_path, secure_filename = save_uploaded_file(file)
-        
+
         # Compute original file hash
         original_hash = compute_sha256(file_path)
-        
+
         # Extract metadata
         metadata = extract_metadata(file_path)
-        
+
         # Assess risk
         risk_assessment = assess_risk(metadata)
-        
+
+        # Security logging
+        log_security_event(
+            "file_analyzed",
+            ip=ip,
+            file_type=metadata.get("file_type"),
+            risk_level=risk_assessment.get("risk_level"),
+            extra={
+                "endpoint": "/analyze",
+                "filename": file.filename,
+                "risk_score": risk_assessment.get("risk_score"),
+            },
+        )
+
         # Prepare response
         response = {
             "filename": file.filename,
             "secure_filename": secure_filename,
             "original_file_hash": original_hash,
             "metadata": metadata,
-            "risk_assessment": risk_assessment
+            "risk_assessment": risk_assessment,
         }
-        
-        return JSONResponse(content=response)
-        
+
+        return response
+
     except HTTPException:
         raise
     except Exception as e:
@@ -99,39 +177,133 @@ async def analyze_file(file: UploadFile = File(...)) -> Dict[str, Any]:
             cleanup_file(file_path)
 
 
-@app.post("/scrub")
-async def scrub_file(file: UploadFile = File(...)) -> Dict[str, Any]:
+@app.post("/verify")
+async def verify_file(
+    request: Request,
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
     """
-    Scrub metadata from uploaded file if risk level is Medium or High.
-    
-    Args:
-        file: Uploaded file (image, PDF, or DOCX)
-        
-    Returns:
-        JSON response with scrubbing results and scrubbed file download
+    Verify whether a file contains high-risk metadata.
+
+    This endpoint reuses the analyzer and risk engine, but does NOT scrub files.
     """
-    file_path = None
-    scrubbed_file_path = None
-    
+    ip = _get_client_ip(request)
+    try:
+        check_rate_limit(ip)
+    except RateLimitError:
+        log_security_event(
+            "rate_limit_triggered",
+            ip=ip,
+            extra={"endpoint": "/verify"},
+        )
+        raise HTTPException(status_code=429, detail="Too Many Requests")
+
+    file_path: str | None = None
     try:
         # Save and validate uploaded file
         file_path, secure_filename = save_uploaded_file(file)
-        
+
         # Compute original file hash
         original_hash = compute_sha256(file_path)
-        
+
         # Extract metadata
         metadata = extract_metadata(file_path)
-        
+
         # Assess risk
         risk_assessment = assess_risk(metadata)
-        risk_level = risk_assessment['risk_level']
-        
+        risk_level = risk_assessment.get("risk_level")
+        high_risk = risk_level == "High"
+
+        # Security logging
+        log_security_event(
+            "file_analyzed",
+            ip=ip,
+            file_type=metadata.get("file_type"),
+            risk_level=risk_level,
+            extra={
+                "endpoint": "/verify",
+                "filename": file.filename,
+                "risk_score": risk_assessment.get("risk_score"),
+            },
+        )
+
+        return {
+            "filename": file.filename,
+            "secure_filename": secure_filename,
+            "original_file_hash": original_hash,
+            "high_risk_metadata": high_risk,
+            "risk_assessment": risk_assessment,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Verification error: {str(e)}")
+    finally:
+        if file_path:
+            cleanup_file(file_path)
+
+
+@app.post("/scrub")
+async def scrub_file(
+    request: Request,
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    """
+    Scrub metadata from uploaded file if risk level is Medium or High.
+
+    Applies per-IP rate limiting, logging, and secure download registration.
+    """
+    ip = _get_client_ip(request)
+    try:
+        check_rate_limit(ip)
+    except RateLimitError:
+        log_security_event(
+            "rate_limit_triggered",
+            ip=ip,
+            extra={"endpoint": "/scrub"},
+        )
+        raise HTTPException(status_code=429, detail="Too Many Requests")
+
+    file_path: str | None = None
+    scrubbed_file_path: str | None = None
+
+    try:
+        # Save and validate uploaded file
+        file_path, secure_filename = save_uploaded_file(file)
+
+        # Compute original file hash
+        original_hash = compute_sha256(file_path)
+
+        # Extract metadata
+        metadata = extract_metadata(file_path)
+
+        # Assess risk
+        risk_assessment = assess_risk(metadata)
+        risk_level = risk_assessment["risk_level"]
+
         # Scrub if Medium or High risk
-        if risk_level in ['Medium', 'High']:
+        if risk_level in ["Medium", "High"]:
             scrubbed_file_path, scrub_result = scrub_metadata(file_path, risk_level)
             scrubbed_hash = compute_sha256(scrubbed_file_path)
-            
+
+            secure_download_name = _register_scrubbed_file(scrubbed_file_path)
+
+            # Security logging
+            log_security_event(
+                "file_scrubbed",
+                ip=ip,
+                file_type=metadata.get("file_type"),
+                risk_level=risk_level,
+                extra={
+                    "endpoint": "/scrub",
+                    "filename": file.filename,
+                    "scrubbed_fields": len(
+                        scrub_result.get("scrubbed_fields", [])
+                    ),
+                },
+            )
+
             response = {
                 "filename": file.filename,
                 "secure_filename": secure_filename,
@@ -141,9 +313,9 @@ async def scrub_file(file: UploadFile = File(...)) -> Dict[str, Any]:
                     "performed": True,
                     "risk_level": risk_level,
                     "scrubbed_file_hash": scrubbed_hash,
-                    "scrubbed_fields": scrub_result.get('scrubbed_fields', []),
-                    "download_url": f"/download/{Path(scrubbed_file_path).name}"
-                }
+                    "scrubbed_fields": scrub_result.get("scrubbed_fields", []),
+                    "download_url": f"/download/{secure_download_name}",
+                },
             }
         else:
             # Low risk - no scrubbing needed
@@ -154,12 +326,15 @@ async def scrub_file(file: UploadFile = File(...)) -> Dict[str, Any]:
                 "risk_assessment": risk_assessment,
                 "scrubbing": {
                     "performed": False,
-                    "reason": f"Risk level is {risk_level}. Scrubbing only performed for Medium and High risk files."
-                }
+                    "reason": (
+                        f"Risk level is {risk_level}. "
+                        "Scrubbing only performed for Medium and High risk files."
+                    ),
+                },
             }
-        
-        return JSONResponse(content=response)
-        
+
+        return response
+
     except ValueError as e:
         # Low risk file - no scrubbing needed
         if file_path:
@@ -177,37 +352,63 @@ async def scrub_file(file: UploadFile = File(...)) -> Dict[str, Any]:
 
 
 @app.get("/download/{filename}")
-async def download_file(filename: str):
+async def download_file(request: Request, filename: str):
     """
-    Download scrubbed file.
-    
-    Args:
-        filename: Secure filename of the scrubbed file
-        
-    Returns:
-        File download response
+    Download a scrubbed file if it is registered, unexpired, and in the temp dir.
     """
+    ip = _get_client_ip(request)
     try:
-        # Security: validate filename doesn't contain path traversal
-        if '..' in filename or '/' in filename or '\\' in filename:
+        check_rate_limit(ip)
+    except RateLimitError:
+        log_security_event(
+            "rate_limit_triggered",
+            ip=ip,
+            extra={"endpoint": "/download"},
+        )
+        raise HTTPException(status_code=429, detail="Too Many Requests")
+
+    try:
+        # Clean up expired files before processing this request
+        _cleanup_expired_files()
+
+        # Security: validate filename does not contain path traversal
+        if ".." in filename or "/" in filename or "\\" in filename:
             raise HTTPException(status_code=400, detail="Invalid filename")
-        
+
+        # Only allow previously registered scrubbed filenames
+        created_at = SCRUBBED_FILES.get(filename)
+        if created_at is None or _is_expired(created_at):
+            # Ensure expired entries are cleaned up
+            SCRUBBED_FILES.pop(filename, None)
+            raise HTTPException(status_code=404, detail="File not found or expired")
+
         temp_dir = Path(tempfile.gettempdir()) / "metaguard"
         file_path = temp_dir / filename
-        
+
         if not file_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
-        
+            SCRUBBED_FILES.pop(filename, None)
+            raise HTTPException(status_code=404, detail="File not found or expired")
+
         # Verify file is in temp directory (prevent path traversal)
-        if not str(file_path).startswith(str(temp_dir)):
+        if not str(file_path.resolve()).startswith(str(temp_dir.resolve())):
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
+        # Security logging
+        log_security_event(
+            "file_downloaded",
+            ip=ip,
+            extra={
+                "endpoint": "/download",
+                "filename": filename,
+            },
+        )
+
         return FileResponse(
             path=str(file_path),
-            filename=filename.replace('_scrubbed', ''),
-            media_type='application/octet-stream'
+            filename=filename.replace("_scrubbed", ""),
+            media_type="application/octet-stream",
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -215,8 +416,9 @@ async def download_file(filename: str):
 
 
 @app.on_event("shutdown")
-async def cleanup_temp_files():
-    """Cleanup temporary files on shutdown."""
+async def cleanup_temp_files() -> None:
+    """Cleanup temporary files on shutdown, including expired scrubbed files."""
+    _cleanup_expired_files()
     temp_dir = Path(tempfile.gettempdir()) / "metaguard"
     if temp_dir.exists():
         try:
@@ -224,9 +426,11 @@ async def cleanup_temp_files():
                 if file.is_file():
                     cleanup_file(str(file))
         except Exception:
+            # Swallow cleanup errors; they are non-fatal.
             pass
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

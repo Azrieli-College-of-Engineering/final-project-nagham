@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from analyzer import compute_sha256, extract_metadata
 from file_validation import cleanup_file, save_uploaded_file
@@ -17,6 +17,12 @@ from rate_limiter import RateLimitError, check_rate_limit
 from risk_engine import assess_risk
 from scrubber import scrub_metadata
 from security_logging import log_security_event
+
+app = FastAPI(
+    title="MetaGuard",
+    description="Metadata analysis and scrubbing service for images, PDFs, and DOCX files",
+    version="1.0.0"
+)
 
 # CORS middleware
 app.add_middleware(
@@ -87,24 +93,24 @@ def _cleanup_expired_files() -> None:
 
 
 @app.get("/")
-async def root() -> Dict[str, Any]:
-    """Root endpoint with API information."""
-    return {
-        "name": "MetaGuard",
-        "version": "1.0.0",
-        "description": "Metadata analysis and scrubbing service",
-        "endpoints": {
-            "/analyze": "POST - Analyze metadata and calculate risk score",
-            "/scrub": "POST - Scrub metadata from files with Medium/High risk",
-            "/verify": "POST - Verify if a file contains high-risk metadata",
-            "/health": "GET - Health check endpoint",
-        },
-    }
+async def root():
+    """Root endpoint redirects to interactive API documentation."""
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
-    """Health check endpoint."""
+    """
+    Health check endpoint for monitoring and deployment verification.
+    
+    This endpoint is used by:
+    - Monitoring systems to verify the service is running
+    - Load balancers to check server health
+    - Container orchestration platforms (Kubernetes, Docker Swarm) for readiness probes
+    - CI/CD pipelines to confirm successful deployments
+    
+    Returns a simple status indicating the API is operational.
+    """
     return {"status": "healthy"}
 
 
@@ -250,9 +256,10 @@ async def scrub_file(
     file: UploadFile = File(...),
 ) -> Dict[str, Any]:
     """
-    Scrub metadata from uploaded file if risk level is Medium or High.
+    Scrub metadata from uploaded file regardless of risk level.
 
     Applies per-IP rate limiting, logging, and secure download registration.
+    All files are scrubbed to remove unnecessary metadata.
     """
     ip = _get_client_ip(request)
     try:
@@ -282,64 +289,43 @@ async def scrub_file(
         risk_assessment = assess_risk(metadata)
         risk_level = risk_assessment["risk_level"]
 
-        # Scrub if Medium or High risk
-        if risk_level in ["Medium", "High"]:
-            scrubbed_file_path, scrub_result = scrub_metadata(file_path, risk_level)
-            scrubbed_hash = compute_sha256(scrubbed_file_path)
+        # Scrub metadata regardless of risk level
+        scrubbed_file_path, scrub_result = scrub_metadata(file_path, risk_level)
+        scrubbed_hash = compute_sha256(scrubbed_file_path)
 
-            secure_download_name = _register_scrubbed_file(scrubbed_file_path)
+        secure_download_name = _register_scrubbed_file(scrubbed_file_path)
 
-            # Security logging
-            log_security_event(
-                "file_scrubbed",
-                ip=ip,
-                file_type=metadata.get("file_type"),
-                risk_level=risk_level,
-                extra={
-                    "endpoint": "/scrub",
-                    "filename": file.filename,
-                    "scrubbed_fields": len(
-                        scrub_result.get("scrubbed_fields", [])
-                    ),
-                },
-            )
-
-            response = {
+        # Security logging
+        log_security_event(
+            "file_scrubbed",
+            ip=ip,
+            file_type=metadata.get("file_type"),
+            risk_level=risk_level,
+            extra={
+                "endpoint": "/scrub",
                 "filename": file.filename,
-                "secure_filename": secure_filename,
-                "original_file_hash": original_hash,
-                "risk_assessment": risk_assessment,
-                "scrubbing": {
-                    "performed": True,
-                    "risk_level": risk_level,
-                    "scrubbed_file_hash": scrubbed_hash,
-                    "scrubbed_fields": scrub_result.get("scrubbed_fields", []),
-                    "download_url": f"/download/{secure_download_name}",
-                },
-            }
-        else:
-            # Low risk - no scrubbing needed
-            response = {
-                "filename": file.filename,
-                "secure_filename": secure_filename,
-                "original_file_hash": original_hash,
-                "risk_assessment": risk_assessment,
-                "scrubbing": {
-                    "performed": False,
-                    "reason": (
-                        f"Risk level is {risk_level}. "
-                        "Scrubbing only performed for Medium and High risk files."
-                    ),
-                },
-            }
+                "scrubbed_fields": len(
+                    scrub_result.get("scrubbed_fields", [])
+                ),
+            },
+        )
+
+        response = {
+            "filename": file.filename,
+            "secure_filename": secure_filename,
+            "original_file_hash": original_hash,
+            "risk_assessment": risk_assessment,
+            "scrubbing": {
+                "performed": True,
+                "risk_level": risk_level,
+                "scrubbed_file_hash": scrubbed_hash,
+                "scrubbed_fields": scrub_result.get("scrubbed_fields", []),
+                "download_url": f"/download/{secure_download_name}",
+            },
+        }
 
         return response
 
-    except ValueError as e:
-        # Low risk file - no scrubbing needed
-        if file_path:
-            cleanup_file(file_path)
-        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

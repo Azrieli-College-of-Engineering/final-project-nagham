@@ -146,7 +146,7 @@ def scrub_docx_metadata(file_path: str, output_path: str) -> Dict[str, Any]:
 
 def scrub_metadata(file_path: str, risk_level: str) -> Tuple[str, Dict[str, Any]]:
     """
-    Scrub metadata from file if risk level is Medium or High.
+    Scrub metadata from file regardless of risk level.
     
     Args:
         file_path: Path to original file
@@ -154,13 +154,7 @@ def scrub_metadata(file_path: str, risk_level: str) -> Tuple[str, Dict[str, Any]
         
     Returns:
         Tuple of (scrubbed_file_path, scrubbing_results)
-        
-    Raises:
-        ValueError: If risk level is Low (no scrubbing needed)
     """
-    if risk_level == 'Low':
-        raise ValueError("No scrubbing needed for Low risk files")
-    
     file_path_obj = Path(file_path)
     file_ext = file_path_obj.suffix.lower()
     output_path = str(file_path_obj.with_name(f"{file_path_obj.stem}_scrubbed{file_ext}"))

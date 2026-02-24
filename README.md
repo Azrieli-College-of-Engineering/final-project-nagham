@@ -361,7 +361,7 @@ metaguard/
 ├── rate_limiter.py                  # In-memory per-IP rate limiting (sliding window)
 ├── security_logging.py              # Structured JSON security logging (no sensitive data)
 ├── requirements.txt                # Python dependencies
-├── MetaGuard_Final_Report_Hebrew.md # Academic report (Hebrew): vulnerability, POC, defenses
+├── MetaGuard_Final_Report_Scrubbed.md # Academic report: vulnerability, POC, defenses
 └── README.md                        # This file
 ```
 
@@ -377,7 +377,7 @@ metaguard/
 | **rate_limiter.py** | In-memory per-IP rate limiting (sliding window: 20 requests per 60 seconds). Raises `RateLimitError` when exceeded. Used in main.py before processing `/analyze`, `/verify`, `/scrub`, and `/download`. |
 | **security_logging.py** | Logs security events as JSON (e.g. file_analyzed, file_scrubbed, file_downloaded, rate_limit_triggered) with masked IPs and without sensitive fields (no metadata values, GPS, paths, or file contents). Used by main.py after relevant operations. |
 | **requirements.txt** | Python dependency list (FastAPI, Uvicorn, Pillow, PyPDF2, python-docx, python-magic, etc.) for `pip install -r requirements.txt`. |
-| **MetaGuard_Final_Report_Hebrew.md** | Academic final project report in Hebrew. Covers the metadata leakage vulnerability, theory, environment, POC/attack scenario, defense mechanisms (tied to the codebase), and references. Intended for submission with the project. |
+| **MetaGuard_Final_Report_Scrubbed.md** | Academic final project report. Covers the metadata leakage vulnerability, theory, environment, POC/attack scenario, defense mechanisms (tied to the codebase), and references. Intended for submission with the project. |
 
 ## Architecture
 

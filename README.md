@@ -7,7 +7,7 @@ MetaGuard is a FastAPI-based web application that addresses **metadata leakage**
 This is a **cybersecurity / web security** project focused on the metadata leakage vulnerability. Typical web systems that accept file uploads (portals, HR systems, public file sharing) often store or redistribute files without stripping metadata; attackers can then extract EXIF, PDF info, or Office properties for OSINT, spear phishing, or software fingerprinting. MetaGuard implements detection (analyze/verify), mitigation (scrub), and defensive controls (MIME validation, file size limits, per-IP rate limiting, TTL for downloads, structured security logging) so that the vulnerability can be understood and prevented.
  
                      
-**Attached documentation:** An academic final project report (`MetaGuard_Final_Report.pdf`) is included in the repository. It describes the vulnerability, theoretical background, the working environment, a proof-of-concept attack scenario, defense mechanisms (with references to the actual codebase), and sources. The report is formatted for use in an academic submission.
+**Attached documentation:** An academic final project report (`MetaGuard_Final_Report_Scrubbed.pdf`) is included in the repository. It describes the vulnerability, theoretical background, the working environment, a proof-of-concept attack scenario, defense mechanisms (with references to the actual codebase), and sources. The report is formatted for use in an academic submission and has been scrubbed of its metadata using the MetaGuard tool.
 
 ## Features
 

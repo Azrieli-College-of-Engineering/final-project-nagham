@@ -291,6 +291,16 @@ async def scrub_file(
 
         # Scrub metadata regardless of risk level
         scrubbed_file_path, scrub_result = scrub_metadata(file_path, risk_level)
+
+        # If scrubbing failed, surface a clear error instead of
+        # trying to hash or register a non-existent file.
+        if not scrub_result.get("success"):
+            error_msg = scrub_result.get("error", "Unknown scrubbing error")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Scrubbing failed: {error_msg}",
+            )
+
         scrubbed_hash = compute_sha256(scrubbed_file_path)
 
         secure_download_name = _register_scrubbed_file(scrubbed_file_path)

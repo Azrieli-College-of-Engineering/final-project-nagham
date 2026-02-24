@@ -1,6 +1,13 @@
 # MetaGuard
 
-MetaGuard is a FastAPI-based web application for analyzing and scrubbing metadata from images, PDFs, and DOCX files. It provides risk assessment based on metadata content and can automatically remove sensitive information.
+MetaGuard is a FastAPI-based web application that addresses **metadata leakage** (information disclosure through file metadata) as a real-world web security vulnerability. It analyzes and scrubs metadata from images, PDFs, and DOCX files, provides rule-based risk assessment, and removes sensitive information before files are stored or shared. The project demonstrates how systems that accept file uploads can expose GPS coordinates, author emails, usernames, and software fingerprints—and how to detect and mitigate these risks with validation, scrubbing, rate limiting, and secure logging.
+
+## About This Project                                                                                                                                                                                                                                                            
+
+This is a **cybersecurity / web security** project focused on the metadata leakage vulnerability. Typical web systems that accept file uploads (portals, HR systems, public file sharing) often store or redistribute files without stripping metadata; attackers can then extract EXIF, PDF info, or Office properties for OSINT, spear phishing, or software fingerprinting. MetaGuard implements detection (analyze/verify), mitigation (scrub), and defensive controls (MIME validation, file size limits, per-IP rate limiting, TTL for downloads, structured security logging) so that the vulnerability can be understood and prevented.
+ 
+                     
+**Attached documentation:** An academic final project report in Hebrew (`MetaGuard_Final_Report_Hebrew.pdf`) is included in the repository. It describes the vulnerability, theoretical background, the working environment, a proof-of-concept attack scenario, defense mechanisms (with references to the actual codebase), and sources. The report is formatted for use in an academic submission.
 
 ## Features
 
@@ -346,16 +353,31 @@ MetaGuard includes multiple hardening layers:
 
 ```
 metaguard/
-├── main.py              # FastAPI application entry point
-├── analyzer.py          # Metadata extraction module
-├── scrubber.py          # Metadata scrubbing module
-├── risk_engine.py       # Risk scoring engine
-├── file_validation.py   # File validation and security
-├── rate_limiter.py      # In-memory per-IP rate limiting
-├── security_logging.py  # Structured security logging utilities
-├── requirements.txt     # Python dependencies
-└── README.md            # This file
+├── main.py                          # FastAPI app: routes, middleware, TTL, download registry
+├── analyzer.py                      # Metadata extraction (EXIF, PDF, DOCX) and SHA-256
+├── scrubber.py                      # Metadata removal for images, PDFs, DOCX
+├── risk_engine.py                   # Rule-based risk scoring (GPS, email, username, etc.)
+├── file_validation.py               # MIME/extension/size validation, secure save, cleanup
+├── rate_limiter.py                  # In-memory per-IP rate limiting (sliding window)
+├── security_logging.py              # Structured JSON security logging (no sensitive data)
+├── requirements.txt                # Python dependencies
+├── MetaGuard_Final_Report_Hebrew.md # Academic report (Hebrew): vulnerability, POC, defenses
+└── README.md                        # This file
 ```
+
+### What Each File Is For
+
+| File | Purpose |
+|------|--------|
+| **main.py** | FastAPI application entry point. Defines routes for `/`, `/health`, `/analyze`, `/verify`, `/scrub`, and `/download/{filename}`. Registers scrubbed files with a 5-minute TTL, runs cleanup of expired files, applies rate limiting and security logging to each endpoint, and uses the other modules for validation, extraction, risk assessment, and scrubbing. |
+| **analyzer.py** | Extracts metadata from supported file types: EXIF (including GPS) from images via Pillow; PDF metadata (Author, Creator, Producer, dates) via PyPDF2; DOCX core properties (author, last_modified_by, etc.) via python-docx. Also computes SHA-256 hashes. Used by `/analyze` and `/verify`, and indirectly by `/scrub`. |
+| **scrubber.py** | Removes metadata from files: strips EXIF from images, clears PDF info dictionary fields, and clears DOCX core properties. Writes a new “scrubbed” file and returns its path and list of scrubbed fields. Used by `/scrub` only. |
+| **risk_engine.py** | Rule-based risk scoring. Assigns points for GPS, author email, username, software/producer/creator versions, and camera make/model; maps total score to Low/Medium/High. Used by `/analyze`, `/verify`, and `/scrub` for risk_assessment in responses. |
+| **file_validation.py** | Validates uploads: allowed extensions and MIME types (via python-magic), file size (max 10MB), and extension–MIME consistency. Saves files with secure random names and restrictive permissions, and provides cleanup. Used by all upload endpoints. |
+| **rate_limiter.py** | In-memory per-IP rate limiting (sliding window: 20 requests per 60 seconds). Raises `RateLimitError` when exceeded. Used in main.py before processing `/analyze`, `/verify`, `/scrub`, and `/download`. |
+| **security_logging.py** | Logs security events as JSON (e.g. file_analyzed, file_scrubbed, file_downloaded, rate_limit_triggered) with masked IPs and without sensitive fields (no metadata values, GPS, paths, or file contents). Used by main.py after relevant operations. |
+| **requirements.txt** | Python dependency list (FastAPI, Uvicorn, Pillow, PyPDF2, python-docx, python-magic, etc.) for `pip install -r requirements.txt`. |
+| **MetaGuard_Final_Report_Hebrew.md** | Academic final project report in Hebrew. Covers the metadata leakage vulnerability, theory, environment, POC/attack scenario, defense mechanisms (tied to the codebase), and references. Intended for submission with the project. |
 
 ## Architecture
 

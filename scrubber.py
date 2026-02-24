@@ -117,6 +117,9 @@ def scrub_docx_metadata(file_path: str, output_path: str) -> Dict[str, Any]:
     }
     
     try:
+        # Ensure output directory exists
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
         doc = Document(file_path)
         core_props = doc.core_properties
         
@@ -131,7 +134,17 @@ def scrub_docx_metadata(file_path: str, output_path: str) -> Dict[str, Any]:
                 value = getattr(core_props, field)
                 if value:
                     result['scrubbed_fields'].append(field)
-                    setattr(core_props, field, None)
+                    # Some properties (like revision) must remain positive ints,
+                    # so we reset them to a safe default instead of None.
+                    if field == "revision":
+                        try:
+                            setattr(core_props, field, 1)
+                        except Exception:
+                            # If setting fails, leave as-is rather than breaking save()
+                            pass
+                    else:
+                        # For string-like properties, clear the value
+                        setattr(core_props, field, "")
         
         # Save scrubbed document
         doc.save(output_path)

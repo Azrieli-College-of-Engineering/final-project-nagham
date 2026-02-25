@@ -9,6 +9,12 @@ This is a **cybersecurity / web security** project focused on the metadata leaka
                      
 **Attached documentation:** An academic final project report (`MetaGuard_Final_Report_Scrubbed.pdf`) is included in the repository. It describes the vulnerability, theoretical background, the working environment, a proof-of-concept attack scenario, defense mechanisms (with references to the actual codebase), and sources. The report is formatted for use in an academic submission and has been scrubbed of its metadata using the MetaGuard tool.
 
+## Application Interface Screenshot
+
+![MetaGuard Swagger UI](./Scrubbed_App_Screenshot.png)
+
+The screenshot above shows the interactive FastAPI documentation at `http://localhost:8000/docs`, where users can upload files, analyze metadata, verify risk, and scrub sensitive information. The screenshot also went through the app's scrubbing api.
+
 ## Features
 
 - **Metadata Extraction**: Extract metadata from images (JPEG, PNG, GIF, BMP, TIFF), PDFs, and DOCX files
@@ -360,9 +366,10 @@ metaguard/
 ├── file_validation.py               # MIME/extension/size validation, secure save, cleanup
 ├── rate_limiter.py                  # In-memory per-IP rate limiting (sliding window)
 ├── security_logging.py              # Structured JSON security logging (no sensitive data)
-├── requirements.txt                # Python dependencies
+├── requirements.txt                 # Python dependencies
 ├── MetaGuard_Final_Report_Scrubbed.md # Academic report: vulnerability, POC, defenses
-└── README.md                        # This file
+├── Scrubbed_App_Screenshot.png      # Screenshot of the Swagger UI (scrubbed by MetaGuard)
+└── README.md                        # This file and project documentation
 ```
 
 ### What Each File Is For
@@ -378,6 +385,7 @@ metaguard/
 | **security_logging.py** | Logs security events as JSON (e.g. file_analyzed, file_scrubbed, file_downloaded, rate_limit_triggered) with masked IPs and without sensitive fields (no metadata values, GPS, paths, or file contents). Used by main.py after relevant operations. |
 | **requirements.txt** | Python dependency list (FastAPI, Uvicorn, Pillow, PyPDF2, python-docx, python-magic, etc.) for `pip install -r requirements.txt`. |
 | **MetaGuard_Final_Report_Scrubbed.md** | Academic final project report. Covers the metadata leakage vulnerability, theory, environment, POC/attack scenario, defense mechanisms (tied to the codebase), and references. Intended for submission with the project. |
+| **Scrubbed_App_Screenshot.png** | Screenshot of the MetaGuard Swagger UI at `http://localhost:8000/docs`, used in the README to illustrate the interactive interface. The image itself has had its metadata scrubbed using the `/scrub` endpoint. |
 
 ## Architecture
 

@@ -79,6 +79,7 @@ uvicorn main:app --reload
 ```
 
 The API will be available at `http://localhost:8000`
+The Installation has been tested on a mac only and it worked perfectly with no issues.
 
 ## Getting Started - Interactive UI Guide
 
